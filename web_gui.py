@@ -1831,7 +1831,7 @@ HTML = r'''
             display: none;
         }
     }
-</style></style>
+</style>
 </head>
 
 <body>
@@ -1947,7 +1947,7 @@ HTML = r'''
     </main>
 </div>
 
-<script><script>
+<script>
 
 let state = null;
 let compareSelection = [];
