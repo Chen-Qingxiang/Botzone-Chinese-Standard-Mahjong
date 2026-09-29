@@ -17,3 +17,12 @@ artifacts/official_bc_v4_tensors/
 Chinese-Standard-Mahjong/
 artifacts/ppo_model.pt
 artifacts/ppo_model.pt.json
+# Local Mahjong trainer development backups
+trainer_cli.py.bak
+trainer_cli_before_*.py
+web_gui_v1.py
+
+# Local editor/environment files
+.vscode/
+.idea/
+.env
