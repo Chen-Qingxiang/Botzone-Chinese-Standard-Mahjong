@@ -190,6 +190,20 @@ def _model_outputs(observation, legal):
             "index": i,
             "name": action_name(action),
             "kind": action.kind.name,
+            "tile_name": (
+                tile_name(action.tile)
+                if action.tile is not None and action.tile >= 0
+                else None
+            ),
+            "discard_name": (
+                tile_name(action.discard)
+                if action.discard is not None and action.discard >= 0
+                else None
+            ),
+            "sequence_names": [
+                tile_name(item)
+                for item in action.sequence
+            ],
             "probability": probability,
             "logit": float(logits[i]),
             "family": float(family[i]),
@@ -921,18 +935,27 @@ HTML = r'''
         border: 1px solid rgba(60,50,35,.16);
         border-radius: 4px;
         min-width: 34px;
-        height: 45px;
-        padding: 0 2px;
+        width: 34px;
+        height: 47px;
+        padding: 2px;
         display: flex;
         align-items: center;
         justify-content: center;
         font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Apple Symbols", sans-serif;
         font-weight: 400;
-        font-size: 30px;
+        font-size: 28px;
         line-height: 1;
         box-shadow:
             0 2px 0 #aaa38f,
             0 4px 7px rgba(0,0,0,.20);
+        overflow: hidden;
+    }
+
+    .mini-tile img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
     }
 
     .meld {
@@ -968,6 +991,14 @@ HTML = r'''
         transition:
             transform .11s ease,
             box-shadow .11s ease;
+    }
+
+    .tile img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+        pointer-events: none;
     }
 
     .tile.playable {
@@ -1111,6 +1142,20 @@ HTML = r'''
     .coach-action {
         font-size: 13px;
         line-height: 1.25;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+    }
+
+    .coach-action-glyph {
+        display: inline-flex;
+        align-items: center;
+        gap: 1px;
+        flex: 0 0 auto;
+        font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Apple Symbols", sans-serif;
+        font-size: 22px;
+        line-height: 1;
     }
 
     .coach-prob {
@@ -1382,6 +1427,79 @@ function tileGlyph(name) {
 }
 
 
+function tileAssetPath(name) {
+    if (!name) return null;
+
+    const rank = parseInt(name, 10);
+
+    if (name.endsWith("万") && rank >= 1 && rank <= 9) {
+        return `/static/tiles/m${rank}.svg`;
+    }
+
+    if (name.endsWith("条") && rank >= 1 && rank <= 9) {
+        return `/static/tiles/s${rank}.svg`;
+    }
+
+    if (name.endsWith("筒") && rank >= 1 && rank <= 9) {
+        return `/static/tiles/p${rank}.svg`;
+    }
+
+    const honors = {
+        "东": "east.svg",
+        "南": "south.svg",
+        "西": "west.svg",
+        "北": "north.svg",
+        "中": "red.svg",
+        "发": "green.svg",
+        "白": "white.svg"
+    };
+
+    return honors[name]
+        ? `/static/tiles/${honors[name]}`
+        : null;
+}
+
+
+function actionGlyphs(row) {
+    if (!row) return "";
+
+    if (row.kind === "CHI" && row.sequence_names?.length) {
+        return row.sequence_names.map(tileGlyph).join("");
+    }
+
+    if (row.kind === "PLAY"
+        || row.kind === "PENG"
+        || row.kind === "GANG"
+        || row.kind === "BUGANG") {
+        return tileGlyph(row.tile_name);
+    }
+
+    if (row.kind === "HU") {
+        return "胡";
+    }
+
+    if (row.kind === "PASS") {
+        return "过";
+    }
+
+    return "";
+}
+
+
+function tileImageElement(name) {
+    const img = document.createElement("img");
+    const src = tileAssetPath(name);
+
+    if (src) {
+        img.src = src;
+        img.alt = name;
+        img.title = name;
+    }
+
+    return img;
+}
+
+
 async function api(url, options={}) {
     const response = await fetch(url, {
         headers: {
@@ -1403,8 +1521,19 @@ async function api(url, options={}) {
 function miniTile(name) {
     const d = document.createElement("div");
     d.className = "mini-tile";
-    d.textContent = tileGlyph(name);
     d.title = name;
+
+    const img = tileImageElement(name);
+
+    if (img.src) {
+        img.onerror = () => {
+            d.replaceChildren(document.createTextNode(tileGlyph(name)));
+        };
+        d.appendChild(img);
+    } else {
+        d.textContent = tileGlyph(name);
+    }
+
     return d;
 }
 
@@ -1541,8 +1670,20 @@ function renderHand() {
 
         const btn = document.createElement("button");
         btn.className = "tile";
-        btn.textContent = tileGlyph(item.name);
         btn.title = item.name;
+
+        const img = tileImageElement(item.name);
+
+        if (img.src) {
+            img.onerror = () => {
+                btn.replaceChildren(
+                    document.createTextNode(tileGlyph(item.name))
+                );
+            };
+            btn.appendChild(img);
+        } else {
+            btn.textContent = tileGlyph(item.name);
+        }
 
         if (playMap.has(item.tile)) {
             btn.classList.add("playable");
@@ -1684,8 +1825,13 @@ function renderCoach() {
                 >
 
                 <div class="coach-action">
-                    ${rank + 1}. ${row.name}
-                    ${rank === 0 ? " ← 推荐" : ""}
+                    <span class="coach-action-glyph">
+                        ${actionGlyphs(row)}
+                    </span>
+                    <span>
+                        ${rank + 1}. ${row.name}
+                        ${rank === 0 ? " ← 推荐" : ""}
+                    </span>
                 </div>
 
                 <div class="coach-prob">
@@ -1737,9 +1883,9 @@ async function loadAnalysis() {
                     <tr>
                         <th>动作</th>
                         <th>偏好</th>
-                        <th>总分</th>
-                        <th>战术</th>
-                        <th>类别</th>
+                        <th>策略总分</th>
+                        <th>具体动作分</th>
+                        <th>类型基准</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1748,7 +1894,7 @@ async function loadAnalysis() {
         data.rows.slice(0, 8).forEach(row => {
             html += `
                 <tr>
-                    <td>${row.name}</td>
+                    <td><span class="coach-action-glyph">${actionGlyphs(row)}</span> ${row.name}</td>
                     <td>${(row.probability * 100).toFixed(1)}%</td>
                     <td>${row.logit.toFixed(2)}</td>
                     <td>${row.tactical.toFixed(2)}</td>
