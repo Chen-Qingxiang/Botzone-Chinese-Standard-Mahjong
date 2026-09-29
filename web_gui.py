@@ -631,6 +631,28 @@ def advance_ai():
             raise RuntimeError("AI 自动推进超过安全步数")
 
 
+def auto_pass_human_if_forced():
+    """
+    训练模式下，如果 HUMAN 当前唯一合法动作就是 PASS，则自动执行。
+
+    这只跳过“没有任何选择”的响应，不会自动替玩家决定
+    吃 / 碰 / 杠 / 胡 / 出牌等真正存在分支的局面。
+    """
+    if env.is_terminal() or env.current_player != HUMAN:
+        return False
+
+    legal = env.legal_actions(HUMAN)
+
+    if (
+        len(legal) == 1
+        and legal[0].kind == ActionType.PASS
+    ):
+        env.step(legal[0])
+        return True
+
+    return False
+
+
 def advance_ai_once():
     """
     只推进一个 AI 决策。
@@ -653,6 +675,10 @@ def advance_ai_once():
     old_event_count = len(env.events)
     action = coach.act(obs, legal)
     env.step(action)
+
+    # 若 AI 动作后轮到 HUMAN，但唯一选择只是“过”，直接自动过。
+    # 这样训练时不会被大量无意义的 PASS 点击打断。
+    auto_pass_human_if_forced()
 
     # 只告诉前端“是否产生了新的公开事件”，不暴露未裁决 claim。
     return len(env.events) > old_event_count
@@ -2245,6 +2271,10 @@ def api_action():
         action = legal[index]
 
         env.step(action)
+
+        # 极少数状态迁移可能立即回到 HUMAN；若此时唯一选择为“过”，
+        # 同样自动跳过。
+        auto_pass_human_if_forced()
 
         # Web 端逐个请求 AI 决策，以便把每一步实际播放出来。
         return jsonify(state_json())
