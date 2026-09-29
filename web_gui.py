@@ -605,28 +605,43 @@ def compare_actions_json(idx_a, idx_b, samples=64):
 
 def advance_ai():
     """
-    让 AI 一直打，直到：
-    - 轮到 HUMAN 决策
-    - 或本局结束
+    兼容旧调用：让 AI 一直推进到 HUMAN 或终局。
+    Web GUI 使用 advance_ai_once()，这样前端可以逐步播放。
     """
     safety = 0
 
     while not env.is_terminal() and env.current_player != HUMAN:
-        player = env.current_player
-        obs = env.observe(player)
-        legal = env.legal_actions(player)
-
-        if not legal:
-            raise RuntimeError(
-                f"玩家 {player} 没有合法动作，phase={env.phase}"
-            )
-
-        action = coach.act(obs, legal)
-        env.step(action)
-
+        advance_ai_once()
         safety += 1
         if safety > 500:
             raise RuntimeError("AI 自动推进超过安全步数")
+
+
+def advance_ai_once():
+    """
+    只推进一个 AI 决策。
+
+    注意：不返回 AI 具体 claim 动作，避免在声明尚未统一裁决前
+    把隐藏的吃/碰/杠意图泄漏给 HUMAN。
+    """
+    if env.is_terminal() or env.current_player == HUMAN:
+        return False
+
+    player = env.current_player
+    obs = env.observe(player)
+    legal = env.legal_actions(player)
+
+    if not legal:
+        raise RuntimeError(
+            f"玩家 {player} 没有合法动作，phase={env.phase}"
+        )
+
+    old_event_count = len(env.events)
+    action = coach.act(obs, legal)
+    env.step(action)
+
+    # 只告诉前端“是否产生了新的公开事件”，不暴露未裁决 claim。
+    return len(env.events) > old_event_count
 
 
 def meld_json(meld):
@@ -697,6 +712,8 @@ def state_json():
         "wall_remaining": len(env.wall),
         "last_discard": last_discard,
         "players": players,
+        "compute_device": str(device),
+        "compare_default": 64 if device.type == "cuda" else 8,
 
         # 只把 HUMAN 的暗手送给浏览器。
         "hand": [
@@ -740,7 +757,8 @@ HTML = r'''
 
     body {
         margin: 0;
-        background: #123b2b;
+        background:
+            radial-gradient(circle at 50% 42%, #1b6047 0, #124330 48%, #09271d 100%);
         color: #f3f3f3;
         font-family:
             -apple-system, BlinkMacSystemFont,
@@ -763,8 +781,10 @@ HTML = r'''
         display: flex;
         align-items: center;
         padding: 0 22px;
-        background: rgba(0,0,0,.25);
+        background: rgba(5,24,18,.78);
+        backdrop-filter: blur(12px);
         border-bottom: 1px solid rgba(255,255,255,.12);
+        box-shadow: 0 8px 24px rgba(0,0,0,.16);
         gap: 22px;
     }
 
@@ -800,10 +820,12 @@ HTML = r'''
     }
 
     .player {
-        background: rgba(0,0,0,.13);
-        border-radius: 12px;
-        padding: 10px;
+        background: rgba(5, 35, 25, .38);
+        border: 1px solid rgba(255,255,255,.09);
+        border-radius: 14px;
+        padding: 11px;
         overflow: auto;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
     }
 
     .p2 {
@@ -830,12 +852,13 @@ HTML = r'''
     }
 
     .center-box {
-        min-width: 280px;
+        min-width: 290px;
         text-align: center;
-        padding: 28px;
-        border-radius: 18px;
-        background: rgba(0,0,0,.22);
-        box-shadow: 0 10px 35px rgba(0,0,0,.18);
+        padding: 30px;
+        border-radius: 20px;
+        background: rgba(4, 31, 22, .54);
+        border: 1px solid rgba(255,255,255,.08);
+        box-shadow: 0 18px 46px rgba(0,0,0,.22);
     }
 
     .human {
@@ -845,6 +868,33 @@ HTML = r'''
         flex-direction: column;
         align-items: center;
         justify-content: flex-end;
+        min-width: 0;
+    }
+
+    .human-public {
+        width: min(920px, 92%);
+        min-height: 58px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        gap: 16px;
+        margin-bottom: 5px;
+    }
+
+    .human-river-wrap,
+    .human-meld-wrap {
+        background: rgba(4, 31, 22, .30);
+        border: 1px solid rgba(255,255,255,.07);
+        border-radius: 10px;
+        padding: 6px 9px;
+    }
+
+    .human-river-wrap {
+        flex: 1;
+    }
+
+    .human-meld-wrap {
+        flex: 0 0 auto;
     }
 
     .player-title {
@@ -866,20 +916,23 @@ HTML = r'''
     }
 
     .mini-tile {
-        background: #f6f3e8;
-        color: #1e2522;
-        border-radius: 3px;
-        min-width: 28px;
-        height: 38px;
-        padding: 0 4px;
+        background: linear-gradient(160deg, #fffef8 0%, #eee8d8 100%);
+        color: #15211b;
+        border: 1px solid rgba(60,50,35,.16);
+        border-radius: 4px;
+        min-width: 34px;
+        height: 45px;
+        padding: 0 2px;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-weight: 650;
-        font-size: 13px;
+        font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Apple Symbols", sans-serif;
+        font-weight: 400;
+        font-size: 30px;
+        line-height: 1;
         box-shadow:
-            0 2px 0 #b8b3a5,
-            0 3px 5px rgba(0,0,0,.22);
+            0 2px 0 #aaa38f,
+            0 4px 7px rgba(0,0,0,.20);
     }
 
     .meld {
@@ -898,14 +951,16 @@ HTML = r'''
     }
 
     .tile {
-        width: 52px;
-        height: 72px;
-        border: 0;
-        border-radius: 5px;
-        background: linear-gradient(#fffdf6, #e9e5d8);
-        color: #161b18;
-        font-size: 18px;
-        font-weight: 700;
+        width: 58px;
+        height: 82px;
+        border: 1px solid rgba(75,60,40,.18);
+        border-radius: 7px;
+        background: linear-gradient(155deg, #fffef9 0%, #f5f1e5 58%, #ded7c4 100%);
+        color: #142119;
+        font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", "Apple Symbols", sans-serif;
+        font-size: 48px;
+        line-height: 1;
+        font-weight: 400;
         cursor: default;
         box-shadow:
             0 4px 0 #aaa595,
@@ -950,8 +1005,54 @@ HTML = r'''
     }
 
     .human-label {
-        margin: 6px 0 8px;
+        margin: 5px 0 9px;
         font-weight: 700;
+        letter-spacing: .04em;
+    }
+
+    .toolbar-control {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: #c8d8d1;
+    }
+
+    .toolbar-control select,
+    .coach-setting select {
+        background: rgba(255,255,255,.10);
+        color: #f2f6f4;
+        border: 1px solid rgba(255,255,255,.14);
+        border-radius: 7px;
+        padding: 6px 8px;
+        outline: none;
+    }
+
+    .toolbar-control option,
+    .coach-setting option {
+        color: #111;
+        background: #fff;
+    }
+
+    .device-badge {
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.08);
+        color: #bcd0c6;
+        font-size: 11px;
+    }
+
+    .coach-setting {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin: 10px 0 4px;
+        padding: 8px 0;
+        border-top: 1px solid rgba(255,255,255,.07);
+        border-bottom: 1px solid rgba(255,255,255,.07);
+        font-size: 12px;
+        color: #bdcfc6;
     }
 
     .terminal {
@@ -1098,15 +1199,30 @@ HTML = r'''
         color: #d2e4dc;
     }
 
-    @media (max-width: 900px) {
+    @media (max-width: 1100px) {
         .table-area {
-            grid-template-columns: 130px 1fr 130px;
+            grid-template-columns: 135px 1fr 135px;
+            padding-right: 15px;
+        }
+
+        .coach-panel {
+            position: static;
+            width: auto;
+            margin: 0 15px 15px;
+        }
+
+        .topbar {
+            flex-wrap: wrap;
+            height: auto;
+            min-height: 58px;
+            padding-top: 8px;
+            padding-bottom: 8px;
         }
 
         .tile {
-            width: 43px;
-            height: 64px;
-            font-size: 15px;
+            width: 46px;
+            height: 67px;
+            font-size: 38px;
         }
     }
 </style>
@@ -1118,6 +1234,18 @@ HTML = r'''
     <div class="topbar">
         <div class="title">麻将 AI 教练</div>
         <div class="status" id="topStatus"></div>
+
+        <div class="toolbar-control">
+            AI 节奏
+            <select id="speedSelect">
+                <option value="250">快</option>
+                <option value="650" selected>正常</option>
+                <option value="1100">慢</option>
+            </select>
+        </div>
+
+        <div class="device-badge" id="deviceBadge">AI device</div>
+
         <button class="new-game" onclick="newGame()">新一局</button>
     </div>
 
@@ -1136,6 +1264,18 @@ HTML = r'''
         <div class="player p1" id="player1"></div>
 
         <div class="human">
+
+            <div class="human-public">
+                <div class="human-river-wrap">
+                    <div class="small">你的牌河</div>
+                    <div class="river" id="humanRiver"></div>
+                </div>
+
+                <div class="human-meld-wrap" id="humanMeldWrap" style="display:none">
+                    <div class="small">你的副露</div>
+                    <div class="meld-row" id="humanMelds"></div>
+                </div>
+            </div>
 
             <div class="actions" id="actions"></div>
 
@@ -1160,6 +1300,16 @@ HTML = r'''
         </div>
 
         <div id="coachRankings"></div>
+
+        <div class="coach-setting">
+            <span>反事实模拟</span>
+            <select id="compareSamples">
+                <option value="0">关闭</option>
+                <option value="8">快速 · 8 worlds</option>
+                <option value="16">标准 · 16 worlds</option>
+                <option value="64">深入 · 64 worlds</option>
+            </select>
+        </div>
 
         <div class="coach-controls">
             <button
@@ -1191,6 +1341,45 @@ HTML = r'''
 
 let state = null;
 let compareSelection = [];
+let advancing = false;
+let compareConfigured = false;
+let gameGeneration = 0;
+
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+
+function tileGlyph(name) {
+    if (!name) return "";
+
+    const rank = parseInt(name, 10);
+
+    if (name.endsWith("万") && rank >= 1 && rank <= 9) {
+        return String.fromCodePoint(0x1F007 + rank - 1);
+    }
+
+    if (name.endsWith("条") && rank >= 1 && rank <= 9) {
+        return String.fromCodePoint(0x1F010 + rank - 1);
+    }
+
+    if (name.endsWith("筒") && rank >= 1 && rank <= 9) {
+        return String.fromCodePoint(0x1F019 + rank - 1);
+    }
+
+    const honors = {
+        "东": "🀀",
+        "南": "🀁",
+        "西": "🀂",
+        "北": "🀃",
+        "中": "🀄",
+        "发": "🀅",
+        "白": "🀆"
+    };
+
+    return honors[name] || name;
+}
 
 
 async function api(url, options={}) {
@@ -1214,7 +1403,8 @@ async function api(url, options={}) {
 function miniTile(name) {
     const d = document.createElement("div");
     d.className = "mini-tile";
-    d.textContent = name;
+    d.textContent = tileGlyph(name);
+    d.title = name;
     return d;
 }
 
@@ -1278,18 +1468,59 @@ function renderPlayer(player) {
 }
 
 
-function playAction(index) {
-    api("/api/action", {
-        method: "POST",
-        body: JSON.stringify({index})
-    })
-    .then(data => {
-        state = data;
+async function playAction(index) {
+    if (advancing) return;
+
+    try {
+        advancing = true;
+
+        state = await api("/api/action", {
+            method: "POST",
+            body: JSON.stringify({index})
+        });
+
         compareSelection = [];
         document.getElementById("coachDetails").innerHTML = "";
         render();
-    })
-    .catch(err => alert(err.message));
+
+        await advanceUntilHuman();
+
+    } catch (err) {
+        alert(err.message);
+    } finally {
+        advancing = false;
+        render();
+    }
+}
+
+
+async function advanceUntilHuman() {
+    const generation = gameGeneration;
+
+    while (
+        state
+        && !state.terminal
+        && state.current_player !== 0
+        && generation === gameGeneration
+    ) {
+        const delay = Number(
+            document.getElementById("speedSelect").value
+        ) || 650;
+
+        await sleep(delay);
+
+        if (generation !== gameGeneration) {
+            return;
+        }
+
+        const result = await api("/api/advance", {
+            method: "POST",
+            body: "{}"
+        });
+
+        state = result.state;
+        render();
+    }
 }
 
 
@@ -1310,7 +1541,8 @@ function renderHand() {
 
         const btn = document.createElement("button");
         btn.className = "tile";
-        btn.textContent = item.name;
+        btn.textContent = tileGlyph(item.name);
+        btn.title = item.name;
 
         if (playMap.has(item.tile)) {
             btn.classList.add("playable");
@@ -1321,6 +1553,44 @@ function renderHand() {
         }
 
         hand.appendChild(btn);
+    }
+}
+
+
+function renderHumanPublic() {
+    const player = state.players[0];
+
+    const river = document.getElementById("humanRiver");
+    river.innerHTML = "";
+
+    for (const tile of player.river) {
+        river.appendChild(miniTile(tile));
+    }
+
+    if (player.river.length === 0) {
+        river.innerHTML = '<span class="small">（还没有弃牌）</span>';
+    }
+
+    const meldWrap = document.getElementById("humanMeldWrap");
+    const meldBox = document.getElementById("humanMelds");
+    meldBox.innerHTML = "";
+
+    const meldTiles = [];
+
+    for (const meld of player.melds) {
+        for (const tile of meld.tiles) {
+            meldTiles.push(tile);
+        }
+    }
+
+    if (meldTiles.length > 0) {
+        meldWrap.style.display = "";
+
+        for (const tile of meldTiles) {
+            meldBox.appendChild(miniTile(tile));
+        }
+    } else {
+        meldWrap.style.display = "none";
     }
 }
 
@@ -1558,10 +1828,20 @@ async function runCompare() {
 
     const [a, b] = compareSelection;
 
+    const samples = Number(
+        document.getElementById("compareSamples").value
+    );
+
+    if (!samples) {
+        alert("反事实模拟当前已关闭。请选择快速、标准或深入模式。");
+        button.disabled = false;
+        return;
+    }
+
     details.innerHTML = `
         <div class="coach-loading">
-            正在跑 64 个配对可能世界……<br>
-            GPU 会同时推进 128 条后续路线。
+            正在跑 ${samples} 个配对可能世界……<br>
+            将推进 ${samples * 2} 条后续路线 · ${state.compute_device}
         </div>
     `;
 
@@ -1574,7 +1854,7 @@ async function runCompare() {
                 body: JSON.stringify({
                     a,
                     b,
-                    samples: 64
+                    samples
                 })
             }
         );
@@ -1720,12 +2000,24 @@ function renderCenter() {
 function render() {
 
     document.getElementById("topStatus").textContent =
-        `牌墙 ${state.wall_remaining} 张`;
+        advancing
+        ? `AI 思考中 · 牌墙 ${state.wall_remaining} 张`
+        : `牌墙 ${state.wall_remaining} 张`;
+
+    document.getElementById("deviceBadge").textContent =
+        `AI · ${state.compute_device}`;
+
+    if (!compareConfigured) {
+        document.getElementById("compareSamples").value =
+            String(state.compare_default || 8);
+        compareConfigured = true;
+    }
 
     renderPlayer(state.players[1]);
     renderPlayer(state.players[2]);
     renderPlayer(state.players[3]);
 
+    renderHumanPublic();
     renderHand();
     renderActions();
     renderCenter();
@@ -1740,6 +2032,9 @@ async function loadState() {
 
 
 async function newGame() {
+    gameGeneration += 1;
+    advancing = false;
+
     state = await api("/api/new", {
         method: "POST",
         body: "{}"
@@ -1804,13 +2099,34 @@ def api_action():
 
         env.step(action)
 
-        advance_ai()
-
+        # Web 端逐个请求 AI 决策，以便把每一步实际播放出来。
         return jsonify(state_json())
 
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
+
+
+@app.route("/api/advance", methods=["POST"])
+def api_advance():
+    try:
+        if env.is_terminal() or env.current_player == HUMAN:
+            return jsonify({
+                "state": state_json(),
+                "public_changed": False,
+            })
+
+        public_changed = advance_ai_once()
+
+        return jsonify({
+            "state": state_json(),
+            "public_changed": public_changed,
+        })
+
+    except Exception as exc:
+        return jsonify({
+            "error": str(exc)
+        }), 400
 
 
 @app.route("/api/analysis")
