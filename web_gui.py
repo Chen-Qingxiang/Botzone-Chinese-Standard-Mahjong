@@ -717,6 +717,22 @@ def state_json():
                     and action.tile >= 0
                     else None
                 ),
+                "discard": (
+                    action.discard
+                    if action.discard is not None
+                    else -1
+                ),
+                "discard_name": (
+                    tile_name(action.discard)
+                    if action.discard is not None
+                    and action.discard >= 0
+                    else None
+                ),
+                "sequence": list(action.sequence),
+                "sequence_names": [
+                    tile_name(item)
+                    for item in action.sequence
+                ],
             })
 
     last_discard = None
@@ -1059,6 +1075,40 @@ HTML = r'''
 
     .action-btn:hover {
         background: rgba(255,255,255,.25);
+    }
+
+    .claim-step {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border-radius: 9px;
+        background: rgba(255, 221, 139, .10);
+        border: 1px solid rgba(255, 221, 139, .22);
+        color: #ffe7a8;
+        font-size: 13px;
+    }
+
+    .claim-step strong {
+        color: #fff3c7;
+    }
+
+    .claim-cancel {
+        border: 1px solid rgba(255,255,255,.16);
+        border-radius: 7px;
+        padding: 6px 10px;
+        background: rgba(255,255,255,.08);
+        color: white;
+        cursor: pointer;
+    }
+
+    .claim-cancel:hover {
+        background: rgba(255,255,255,.16);
+    }
+
+    .tile.claim-discard {
+        outline: 2px solid rgba(255, 221, 139, .82);
+        outline-offset: 2px;
     }
 
     .human-label {
@@ -1415,6 +1465,7 @@ let compareSelection = [];
 let advancing = false;
 let compareConfigured = false;
 let gameGeneration = 0;
+let pendingClaim = null;
 
 
 function sleep(ms) {
@@ -1490,11 +1541,20 @@ function actionGlyphs(row) {
     if (!row) return "";
 
     if (row.kind === "CHI" && row.sequence_names?.length) {
-        return row.sequence_names.map(tileGlyph).join("");
+        const claim = row.sequence_names.map(tileGlyph).join("");
+        return row.discard_name
+            ? `${claim} → ${tileGlyph(row.discard_name)}`
+            : claim;
+    }
+
+    if (row.kind === "PENG") {
+        const claim = tileGlyph(row.tile_name);
+        return row.discard_name
+            ? `${claim} → ${tileGlyph(row.discard_name)}`
+            : claim;
     }
 
     if (row.kind === "PLAY"
-        || row.kind === "PENG"
         || row.kind === "GANG"
         || row.kind === "BUGANG") {
         return tileGlyph(row.tile_name);
@@ -1635,6 +1695,7 @@ async function playAction(index) {
         });
 
         compareSelection = [];
+        pendingClaim = null;
         document.getElementById("coachDetails").innerHTML = "";
         render();
 
@@ -1674,6 +1735,7 @@ async function advanceUntilHuman() {
         });
 
         state = result.state;
+        pendingClaim = null;
         render();
     }
 }
@@ -1684,11 +1746,25 @@ function renderHand() {
     const hand = document.getElementById("hand");
     hand.innerHTML = "";
 
-    const playMap = new Map();
+    const actionMap = new Map();
 
-    for (const action of state.legal_actions) {
-        if (action.kind === "PLAY") {
-            playMap.set(action.tile, action.index);
+    if (pendingClaim) {
+        // 第二步：碰/吃已经由玩家选定，现在只允许选择该声明后
+        // 真正合法的弃牌。每张弃牌对应引擎里的一个组合 Action。
+        for (const index of pendingClaim.indices) {
+            const action = state.legal_actions.find(
+                item => item.index === index
+            );
+
+            if (action && action.discard >= 0) {
+                actionMap.set(action.discard, action.index);
+            }
+        }
+    } else {
+        for (const action of state.legal_actions) {
+            if (action.kind === "PLAY") {
+                actionMap.set(action.tile, action.index);
+            }
         }
     }
 
@@ -1711,10 +1787,14 @@ function renderHand() {
             btn.textContent = tileGlyph(item.name);
         }
 
-        if (playMap.has(item.tile)) {
+        if (actionMap.has(item.tile)) {
             btn.classList.add("playable");
 
-            const index = playMap.get(item.tile);
+            if (pendingClaim) {
+                btn.classList.add("claim-discard");
+            }
+
+            const index = actionMap.get(item.tile);
 
             btn.onclick = () => playAction(index);
         }
@@ -1762,25 +1842,117 @@ function renderHumanPublic() {
 }
 
 
+function claimGroupKey(action) {
+    if (action.kind === "PENG") {
+        return `PENG:${action.tile}`;
+    }
+
+    if (action.kind === "CHI") {
+        return `CHI:${(action.sequence || []).join(",")}`;
+    }
+
+    return null;
+}
+
+
+function claimGroupLabel(action) {
+    if (action.kind === "PENG") {
+        return `${tileGlyph(action.tile_name)} 碰 ${action.tile_name}`;
+    }
+
+    if (action.kind === "CHI") {
+        const glyphs = (action.sequence_names || [])
+            .map(tileGlyph)
+            .join("");
+        const names = (action.sequence_names || []).join(" ");
+        return `${glyphs} 吃 ${names}`;
+    }
+
+    return action.name;
+}
+
+
+function startClaimStep(actions) {
+    if (!actions.length) return;
+
+    const first = actions[0];
+
+    pendingClaim = {
+        kind: first.kind,
+        indices: actions.map(item => item.index),
+        label: claimGroupLabel(first),
+    };
+
+    renderActions();
+    renderHand();
+}
+
+
+function cancelClaimStep() {
+    pendingClaim = null;
+    renderActions();
+    renderHand();
+}
+
+
 function renderActions() {
 
     const box = document.getElementById("actions");
     box.innerHTML = "";
 
+    if (pendingClaim) {
+        const step = document.createElement("div");
+        step.className = "claim-step";
+        step.innerHTML = `
+            <span>
+                已选择 <strong>${pendingClaim.label}</strong>，
+                现在请选择一张手牌打出
+            </span>
+        `;
+
+        const cancel = document.createElement("button");
+        cancel.className = "claim-cancel";
+        cancel.textContent = "取消";
+        cancel.onclick = cancelClaimStep;
+
+        step.appendChild(cancel);
+        box.appendChild(step);
+        return;
+    }
+
+    const groups = new Map();
+
     for (const action of state.legal_actions) {
 
-        // 普通 PLAY 已经可以直接点牌，不再重复显示按钮。
+        // 普通 PLAY 已经可以直接点手牌，不重复显示按钮。
         if (action.kind === "PLAY") {
             continue;
         }
 
+        const key = claimGroupKey(action);
+
+        if (key) {
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(action);
+            continue;
+        }
+
+        // PASS / HU / GANG / BUGANG 等没有“声明后再弃牌”的第二步，
+        // 保持一步操作。
         const btn = document.createElement("button");
         btn.className = "action-btn";
         btn.textContent = action.name;
+        btn.onclick = () => playAction(action.index);
+        box.appendChild(btn);
+    }
 
-        btn.onclick = () =>
-            playAction(action.index);
-
+    for (const actions of groups.values()) {
+        const btn = document.createElement("button");
+        btn.className = "action-btn";
+        btn.textContent = claimGroupLabel(actions[0]);
+        btn.onclick = () => startClaimStep(actions);
         box.appendChild(btn);
     }
 }
@@ -2200,6 +2372,7 @@ function render() {
 
 async function loadState() {
     state = await api("/api/state");
+    pendingClaim = null;
     render();
 }
 
@@ -2214,6 +2387,7 @@ async function newGame() {
     });
 
     compareSelection = [];
+    pendingClaim = null;
 
     document.getElementById(
         "coachDetails"
