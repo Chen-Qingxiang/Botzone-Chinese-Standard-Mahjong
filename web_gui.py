@@ -1077,6 +1077,18 @@ HTML = r'''
         width: min(230px, 22%);
     }
 
+    .player.active-player .player-head {
+        border-color: rgba(87,240,174,.58);
+        box-shadow:
+            0 0 0 3px rgba(87,240,174,.07),
+            0 8px 20px rgba(0,0,0,.18);
+    }
+
+    .player.active-player .avatar {
+        background: linear-gradient(145deg, #a8f6d6, #42c997);
+        color: #123629;
+    }
+
     .player-head {
         display: inline-flex;
         align-items: center;
@@ -2101,25 +2113,107 @@ function miniTile(name) {
 }
 
 
-function renderPlayer(player) {
+function playerLabel(id) {
+    return id === 0 ? "你" : `玩家 ${id}`;
+}
 
+
+function phaseLabel(phase) {
+    const labels = {
+        draw: "摸牌",
+        discard: "出牌",
+        claim: "响应"
+    };
+
+    return labels[phase] || phase;
+}
+
+
+function coachTileHTML(name) {
+    const src = tileAssetPath(name);
+
+    if (!src) {
+        return `<span>${tileGlyph(name)}</span>`;
+    }
+
+    return `
+        <img
+            src="${src}"
+            alt="${name}"
+            title="${name}"
+            onerror="this.replaceWith(document.createTextNode('${tileGlyph(name)}'))"
+        >
+    `;
+}
+
+
+function primaryTileName(row) {
+    if (!row) return null;
+
+    if (row.kind === "CHI" && row.sequence_names?.length) {
+        return row.sequence_names[Math.floor(row.sequence_names.length / 2)];
+    }
+
+    if (row.tile_name) {
+        return row.tile_name;
+    }
+
+    if (row.discard_name) {
+        return row.discard_name;
+    }
+
+    return null;
+}
+
+
+function renderPlayer(player) {
     const box = document.getElementById(
         "player" + player.id
     );
 
     box.innerHTML = "";
+    box.classList.toggle(
+        "active-player",
+        !state.terminal && state.current_player === player.id
+    );
 
-    const title = document.createElement("div");
-    title.className = "player-title";
-    title.textContent =
-        `玩家 ${player.id} · 暗牌 ${player.hand_count} 张`;
+    const head = document.createElement("div");
+    head.className = "player-head";
+    head.innerHTML = `
+        <div class="avatar">●</div>
+        <div>
+            <div class="player-name">${playerLabel(player.id)}</div>
+            <div class="player-count">
+                暗牌 ${player.hand_count} 张
+                ${state.current_player === player.id && !state.terminal ? " · 当前行动" : ""}
+            </div>
+        </div>
+    `;
+    box.appendChild(head);
 
-    box.appendChild(title);
+    const concealed = document.createElement("div");
+    concealed.className = "concealed-row";
 
-    const riverTitle = document.createElement("div");
-    riverTitle.className = "small";
-    riverTitle.textContent = "牌河";
-    box.appendChild(riverTitle);
+    const backCount = Math.min(player.hand_count, 14);
+
+    for (let i = 0; i < backCount; i += 1) {
+        const back = document.createElement("div");
+        back.className = "tile-back";
+        concealed.appendChild(back);
+    }
+
+    box.appendChild(concealed);
+
+    const publicBox = document.createElement("div");
+    publicBox.className = "player-public";
+
+    const publicLabel = document.createElement("div");
+    publicLabel.className = "player-public-label";
+    publicLabel.innerHTML = `
+        <span>牌河</span>
+        <span>${player.river.length} 张</span>
+    `;
+    publicBox.appendChild(publicLabel);
 
     const river = document.createElement("div");
     river.className = "river";
@@ -2130,17 +2224,20 @@ function renderPlayer(player) {
 
     if (player.river.length === 0) {
         river.innerHTML =
-            '<span class="small">（空）</span>';
+            '<span class="small">还没有弃牌</span>';
     }
 
-    box.appendChild(river);
+    publicBox.appendChild(river);
 
     if (player.melds.length > 0) {
-        const label = document.createElement("div");
-        label.className = "small";
-        label.style.marginTop = "9px";
-        label.textContent = "副露";
-        box.appendChild(label);
+        const meldLabel = document.createElement("div");
+        meldLabel.className = "player-public-label";
+        meldLabel.style.marginTop = "7px";
+        meldLabel.innerHTML = `
+            <span>副露</span>
+            <span>${player.melds.length} 组</span>
+        `;
+        publicBox.appendChild(meldLabel);
 
         for (const meld of player.melds) {
             const wrap = document.createElement("div");
@@ -2154,10 +2251,14 @@ function renderPlayer(player) {
             }
 
             wrap.appendChild(row);
-            box.appendChild(wrap);
+            publicBox.appendChild(wrap);
         }
     }
+
+    box.appendChild(publicBox);
 }
+
+
 
 
 async function playAction(index) {
@@ -2219,15 +2320,12 @@ async function advanceUntilHuman() {
 
 
 function renderHand() {
-
     const hand = document.getElementById("hand");
     hand.innerHTML = "";
 
     const actionMap = new Map();
 
     if (pendingClaim) {
-        // 第二步：碰/吃已经由玩家选定，现在只允许选择该声明后
-        // 真正合法的弃牌。每张弃牌对应引擎里的一个组合 Action。
         for (const index of pendingClaim.indices) {
             const action = state.legal_actions.find(
                 item => item.index === index
@@ -2245,8 +2343,28 @@ function renderHand() {
         }
     }
 
-    for (const item of state.hand) {
+    const playRecommendations = (
+        !pendingClaim
+        && state.current_player === 0
+        && Array.isArray(state.ai_rankings)
+    )
+        ? state.ai_rankings.filter(row => row.kind === "PLAY").slice(0, 2)
+        : [];
 
+    const recommendationByName = new Map();
+
+    playRecommendations.forEach((row, rank) => {
+        if (row.tile_name) {
+            recommendationByName.set(row.tile_name, {
+                rank,
+                probability: row.probability
+            });
+        }
+    });
+
+    const badgePlaced = new Set();
+
+    for (const item of state.hand) {
         const btn = document.createElement("button");
         btn.className = "tile";
         btn.title = item.name;
@@ -2272,13 +2390,35 @@ function renderHand() {
             }
 
             const index = actionMap.get(item.tile);
-
             btn.onclick = () => playAction(index);
+        }
+
+        const recommendation = recommendationByName.get(item.name);
+
+        if (recommendation) {
+            btn.classList.add(
+                recommendation.rank === 0
+                    ? "recommended-primary"
+                    : "recommended-secondary"
+            );
+
+            if (!badgePlaced.has(item.name)) {
+                const badge = document.createElement("div");
+                badge.className =
+                    "recommend-badge"
+                    + (recommendation.rank === 1 ? " secondary" : "");
+                badge.textContent =
+                    `${(recommendation.probability * 100).toFixed(0)}%`;
+                btn.appendChild(badge);
+                badgePlaced.add(item.name);
+            }
         }
 
         hand.appendChild(btn);
     }
 }
+
+
 
 
 function renderHumanPublic() {
@@ -2462,11 +2602,15 @@ function toggleCompare(index, checked) {
 
 
 function renderCoach() {
+    const featured =
+        document.getElementById("coachFeatured");
+    const others =
+        document.getElementById("coachOthers");
+    const detailsElement =
+        document.getElementById("otherCandidates");
 
-    const box =
-        document.getElementById("coachRankings");
-
-    box.innerHTML = "";
+    featured.innerHTML = "";
+    others.innerHTML = "";
 
     if (
         !state
@@ -2474,61 +2618,127 @@ function renderCoach() {
         || !state.ai_rankings
         || state.ai_rankings.length === 0
     ) {
-        box.innerHTML =
-            '<div class="small">当前没有需要你决策的动作。</div>';
+        featured.innerHTML = `
+            <div class="featured-card">
+                <div></div>
+                <div class="coach-tile-icon">…</div>
+                <div>
+                    <div class="featured-rank">等待决策</div>
+                    <div class="featured-action">当前没有需要你选择的动作</div>
+                    <div class="featured-meta">
+                        AI 行动结束后，推荐会自动出现在这里。
+                    </div>
+                </div>
+                <div></div>
+            </div>
+        `;
+
+        detailsElement.style.display = "none";
         return;
     }
 
-    state.ai_rankings.forEach(
-        (row, rank) => {
+    detailsElement.style.display = "";
 
-            const div =
-                document.createElement("div");
+    const topRows = state.ai_rankings.slice(0, 2);
 
-            div.className = "coach-row";
+    topRows.forEach((row, rank) => {
+        const card = document.createElement("div");
+        card.className =
+            "featured-card "
+            + (rank === 0 ? "primary" : "secondary");
 
-            const checked =
-                compareSelection.includes(
-                    row.index
-                );
+        const checked =
+            compareSelection.includes(row.index);
 
-            div.innerHTML = `
-                <input
-                    class="coach-check"
-                    type="checkbox"
-                    ${checked ? "checked" : ""}
-                >
+        const tileName = primaryTileName(row);
 
-                <div class="coach-action">
-                    <span>${rank + 1}.</span>
-                    <span class="coach-action-glyph">
-                        ${actionGlyphs(row)}
-                    </span>
-                    <span>
-                        ${row.name}
-                        ${rank === 0 ? " ← 推荐" : ""}
-                    </span>
+        card.innerHTML = `
+            <input
+                type="checkbox"
+                ${checked ? "checked" : ""}
+                aria-label="选择 ${row.name} 用于比较"
+            >
+
+            <div class="coach-tile-icon">
+                ${tileName ? coachTileHTML(tileName) : actionGlyphs(row)}
+            </div>
+
+            <div>
+                <div class="featured-rank">
+                    ${rank === 0 ? "推荐 · 首选" : "备选 · 第二选择"}
                 </div>
-
-                <div class="coach-prob">
-                    ${(row.probability * 100).toFixed(2)}%
+                <div class="featured-action">${row.name}</div>
+                <div class="featured-meta">
+                    策略总分 ${row.logit.toFixed(2)}
+                    · 具体动作分 ${row.tactical.toFixed(2)}
                 </div>
-            `;
+            </div>
 
-            const checkbox =
-                div.querySelector("input");
+            <div class="featured-prob">
+                ${(row.probability * 100).toFixed(1)}<span>%</span>
+            </div>
+        `;
 
-            checkbox.onchange = () => {
-                toggleCompare(
-                    row.index,
-                    checkbox.checked
-                );
-            };
+        const checkbox = card.querySelector("input");
 
-            box.appendChild(div);
-        }
-    );
+        checkbox.onchange = () => {
+            toggleCompare(
+                row.index,
+                checkbox.checked
+            );
+        };
+
+        featured.appendChild(card);
+    });
+
+    const remaining = state.ai_rankings.slice(2);
+
+    if (remaining.length === 0) {
+        detailsElement.style.display = "none";
+        return;
+    }
+
+    detailsElement.querySelector("summary").textContent =
+        `其他候选 · ${remaining.length} 项`;
+
+    remaining.forEach((row, rank) => {
+        const div = document.createElement("div");
+        div.className = "other-row";
+
+        const checked =
+            compareSelection.includes(row.index);
+
+        div.innerHTML = `
+            <input
+                type="checkbox"
+                ${checked ? "checked" : ""}
+                aria-label="选择 ${row.name} 用于比较"
+            >
+
+            <div class="other-action">
+                <span class="coach-action-glyph">${actionGlyphs(row)}</span>
+                &nbsp;${rank + 3}. ${row.name}
+            </div>
+
+            <div class="other-prob">
+                ${(row.probability * 100).toFixed(2)}%
+            </div>
+        `;
+
+        const checkbox = div.querySelector("input");
+
+        checkbox.onchange = () => {
+            toggleCompare(
+                row.index,
+                checkbox.checked
+            );
+        };
+
+        others.appendChild(div);
+    });
 }
+
+
 
 
 async function loadAnalysis() {
@@ -2767,23 +2977,24 @@ async function runCompare() {
 
 
 function renderCenter() {
-
     const box = document.getElementById("centerInfo");
+    box.innerHTML = "";
 
     if (state.terminal) {
-
         const r = state.result;
 
         if (r.winner === null) {
             box.innerHTML = `
-                <div class="terminal">流局</div>
+                <div class="round-title">本局结束</div>
+                <div class="terminal" style="margin-top:10px">流局</div>
             `;
         } else {
             box.innerHTML = `
-                <div class="terminal">
-                    玩家 ${r.winner} 胡牌
+                <div class="round-title">本局结束</div>
+                <div class="terminal" style="margin-top:10px">
+                    ${playerLabel(r.winner)} 胡牌
                 </div>
-                <div style="margin-top:8px">
+                <div class="center-current">
                     ${r.fan_count} 番
                 </div>
             `;
@@ -2792,39 +3003,54 @@ function renderCenter() {
         return;
     }
 
-    let last = "";
+    const title = document.createElement("div");
+    title.className = "round-title";
+    title.textContent = "训练局";
+    box.appendChild(title);
+
+    const wallNumber = document.createElement("div");
+    wallNumber.className = "wall-number";
+    wallNumber.textContent = state.wall_remaining;
+    box.appendChild(wallNumber);
+
+    const wallLabel = document.createElement("div");
+    wallLabel.className = "center-label";
+    wallLabel.textContent = "牌墙剩余";
+    box.appendChild(wallLabel);
+
+    const current = document.createElement("div");
+    current.className = "center-current";
+    current.textContent =
+        `当前：${playerLabel(state.current_player)} · ${phaseLabel(state.phase)}`;
+    box.appendChild(current);
 
     if (state.last_discard) {
-        last = `
-            <div class="last">
-                玩家 ${state.last_discard.player}
-                打 ${state.last_discard.tile}
-            </div>
-        `;
+        const last = document.createElement("div");
+        last.className = "last-play";
+
+        const text = document.createElement("span");
+        text.textContent =
+            `上一手：${playerLabel(state.last_discard.player)} 打`;
+        last.appendChild(text);
+        last.appendChild(miniTile(state.last_discard.tile));
+
+        box.appendChild(last);
     }
-
-    box.innerHTML = `
-        <div style="font-size:28px;font-weight:700">
-            ${state.wall_remaining}
-        </div>
-        <div class="small">牌墙剩余</div>
-
-        ${last}
-
-        <div style="margin-top:14px" class="small">
-            当前：玩家 ${state.current_player}
-            · ${state.phase}
-        </div>
-    `;
 }
+
+
 
 
 function render() {
 
     document.getElementById("topStatus").textContent =
         advancing
-        ? `AI 思考中 · 牌墙 ${state.wall_remaining} 张`
-        : `牌墙 ${state.wall_remaining} 张`;
+        ? `AI 思考中 · 剩余 ${state.wall_remaining} 张`
+        : (
+            state.current_player === 0 && !state.terminal
+            ? `你的回合 · 剩余 ${state.wall_remaining} 张`
+            : `剩余 ${state.wall_remaining} 张`
+        );
 
     document.getElementById("deviceBadge").textContent =
         `AI · ${state.compute_device}`;
