@@ -1825,11 +1825,12 @@ function renderCoach() {
                 >
 
                 <div class="coach-action">
+                    <span>${rank + 1}.</span>
                     <span class="coach-action-glyph">
                         ${actionGlyphs(row)}
                     </span>
                     <span>
-                        ${rank + 1}. ${row.name}
+                        ${row.name}
                         ${rank === 0 ? " ← 推荐" : ""}
                     </span>
                 </div>
