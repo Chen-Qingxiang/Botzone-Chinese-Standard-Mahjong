@@ -749,6 +749,16 @@ def state_json():
         players.append({
             "id": p,
             "hand_count": len(env.hands[p]),
+            # 对局结束后公开所有玩家剩余暗手，便于复盘；
+            # 对局进行中仍然绝不把 AI 手牌发送到浏览器。
+            "revealed_hand": (
+                [
+                    tile_name(x)
+                    for x in env.hands[p]
+                ]
+                if env.is_terminal()
+                else None
+            ),
             "river": [
                 tile_name(x)
                 for x in env.discards[p]
@@ -2184,7 +2194,7 @@ function renderPlayer(player) {
         <div>
             <div class="player-name">${playerLabel(player.id)}</div>
             <div class="player-count">
-                暗牌 ${player.hand_count} 张
+                ${state.terminal ? "摊牌" : "暗牌"} ${player.hand_count} 张
                 ${state.current_player === player.id && !state.terminal ? " · 当前行动" : ""}
             </div>
         </div>
@@ -2194,12 +2204,21 @@ function renderPlayer(player) {
     const concealed = document.createElement("div");
     concealed.className = "concealed-row";
 
-    const backCount = Math.min(player.hand_count, 14);
+    if (
+        state.terminal
+        && Array.isArray(player.revealed_hand)
+    ) {
+        for (const tile of player.revealed_hand) {
+            concealed.appendChild(miniTile(tile));
+        }
+    } else {
+        const backCount = Math.min(player.hand_count, 14);
 
-    for (let i = 0; i < backCount; i += 1) {
-        const back = document.createElement("div");
-        back.className = "tile-back";
-        concealed.appendChild(back);
+        for (let i = 0; i < backCount; i += 1) {
+            const back = document.createElement("div");
+            back.className = "tile-back";
+            concealed.appendChild(back);
+        }
     }
 
     box.appendChild(concealed);
